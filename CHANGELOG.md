@@ -96,6 +96,18 @@
 ## 1.1.29
 * expose getVisibleIndexData method in controller
 
+## Unreleased (fork)
+* Unknown row heights fall back to a decaying average of recent measurements
+  instead of a fixed constant, so jumps and keep-position math track the
+  current content (long rows vs one-line rows)
+* Refresh the reported scroll extent when fresh samples move the estimate,
+  tracking the far end when parked there and never moving a mid-list offset
+* Snap to the far end when rows are evicted from under the viewport instead
+  of dangling on stale rows; the window builds around the destination so no
+  blank correction frame flashes
+* Clamp every scroll offset correction to the valid range so estimates can
+  no longer overshoot past either end
+
 ## TODO
 * Add horizontal scroll support
 * Add creating items when flutter list view created

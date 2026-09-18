@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../flutter_list_view.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -138,6 +140,28 @@ class FlutterListViewElement extends RenderObjectElement {
 
   /// It will store the height of item which has rendered or provide by feedback
   final Map<String, double> _itemHeights = {};
+
+  /// Decaying average of recently measured row heights. Rows the list has
+  /// never laid out fall back to this instead of a fixed constant, so jump
+  /// and keep-position math tracks the current content regime (long messages
+  /// vs one-line emotes) instead of a one-size guess. Null until the first
+  /// real measurement, while the delegate's preferItemHeight applies.
+  double? _estimatedItemHeight;
+  int _estimatedSamples = 0;
+
+  /// Fallback value the last total calc was based on. When fresh samples
+  /// move the estimate past materiality, the reported scroll extent is
+  /// stale and the next layout refreshes it without rebuilding any rows.
+  double? _lastCalcEstimate;
+
+  /// True when the height estimate moved enough since the last total calc
+  /// that max extent and end clamps are materially wrong.
+  bool get totalEstimateStale {
+    final current = _estimatedItemHeight;
+    final last = _lastCalcEstimate;
+    if (current == null || last == null) return false;
+    return (current - last).abs() > math.max(1.0, last * 0.05);
+  }
 
   /// The cache'd element. These element will be reused
   final List<FlutterListViewRenderData> _cachedElements = [];
@@ -374,6 +398,19 @@ class FlutterListViewElement extends RenderObjectElement {
     return false;
   }
 
+  /// Fallback height for rows that were never measured. Prefers the
+  /// decaying average of recent measurements so the estimate follows the
+  /// current content; the delegate's preferItemHeight only seeds it.
+  double _fallbackItemHeight() {
+    final estimated = _estimatedItemHeight;
+    if (estimated != null) return estimated;
+    if (widget.delegate is FlutterListViewDelegate) {
+      var flutterListDelegate = widget.delegate as FlutterListViewDelegate;
+      return flutterListDelegate.preferItemHeight;
+    }
+    return 50.0;
+  }
+
   /// [_itemHeights]维护着已经layout的高度, 如果_itemHeights有，则取这个高度
   /// 没有，则返回preferHeight或后面扩展的接口（要用户提供的Height）
   double getItemHeight(String key, int index) {
@@ -384,11 +421,9 @@ class FlutterListViewElement extends RenderObjectElement {
         var flutterListDelegate = widget.delegate as FlutterListViewDelegate;
         if (flutterListDelegate.onItemHeight != null) {
           return flutterListDelegate.onItemHeight!(index);
-        } else {
-          return flutterListDelegate.preferItemHeight;
         }
       }
-      return 50.0;
+      return _fallbackItemHeight();
     }
   }
 
@@ -432,7 +467,21 @@ class FlutterListViewElement extends RenderObjectElement {
 
   setItemHeight(String key, double height) {
     if (!_isInScrolling) {
-      _itemHeights[key] = height;
+      // Only fresh measurements move the estimate: rows re-laid out at an
+      // unchanged height reaffirm nothing, so sitting content can not
+      // overweight the average and stale regimes wash out within a
+      // screenful of new rows. Exact running mean for the first samples so
+      // no arbitrary seed biases it, then an exponential average so recent
+      // rows keep outweighing older ones.
+      if (_itemHeights[key] != height) {
+        _itemHeights[key] = height;
+        final samples = _estimatedSamples;
+        final current = _estimatedItemHeight ?? height;
+        _estimatedItemHeight = samples < 16
+            ? current + (height - current) / (samples + 1)
+            : current + (height - current) * 0.15;
+        _estimatedSamples = samples + 1;
+      }
     }
   }
 
@@ -480,15 +529,12 @@ class FlutterListViewElement extends RenderObjectElement {
           calcItemCount++;
         }
       }
-      var itemHeight = 50.0;
-      if (widget.delegate is FlutterListViewDelegate) {
-        var flutterListDelegate = widget.delegate as FlutterListViewDelegate;
-        itemHeight = flutterListDelegate.preferItemHeight;
-      }
+      var itemHeight = _fallbackItemHeight();
 
       height += ((childCount - calcItemCount) * itemHeight);
       _totalItemHeight = height;
     }
+    _lastCalcEstimate = _fallbackItemHeight();
   }
 
   double getScrollOffsetByIndex(int index) {

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'flutter_list_view_delegate.dart';
 import 'package:flutter/rendering.dart';
 import 'flutter_list_view_element.dart';
@@ -113,11 +115,32 @@ class FlutterListViewRender extends RenderSliver
   double? _scrollOffsetDifferFromLast;
   double? lastScrollOffset;
 
+  /// Child count seen by the previous layout. A shrink means rows were
+  /// removed, which is the only case where a missing keep-position anchor
+  /// must snap instead of holding a stale offset.
+  int? _lastChildCount;
+
+  /// Absolute offset a snap decided on during this layout (evicted anchor,
+  /// refreshed total). Cleared on entry; when set, the window builds around
+  /// it and the correction rides along with full geometry.
+  double? _snapTarget;
+
+  /// Whether [_snapTarget] means "parked at the far end" as opposed to a
+  /// clamped resting offset. Only end parking tracks a refreshed max; a
+  /// clamp to zero must never chase a grown extent afterwards.
+  bool _snapTracksEnd = false;
+
   @override
   void performLayout() {
     if (childManager.supressElementGenerate) {
       return;
     }
+
+    final childCountShrunk =
+        _lastChildCount != null && childManager.childCount < _lastChildCount!;
+    _lastChildCount = childManager.childCount;
+    _snapTarget = null;
+    _snapTracksEnd = false;
 
     final SliverConstraints constraints = this.constraints;
     if (lastScrollOffset != null) {
@@ -127,9 +150,9 @@ class FlutterListViewRender extends RenderSliver
     lastScrollOffset = constraints.scrollOffset;
 
     // layout between start and end
-    final double targetStartScrollOffset =
+    double targetStartScrollOffset =
         constraints.scrollOffset + constraints.cacheOrigin;
-    final double targetEndScrollOffset =
+    double targetEndScrollOffset =
         targetStartScrollOffset + constraints.remainingCacheExtent;
 
     // print("cacheOrigin: ${constraints.cacheOrigin}");
@@ -164,14 +187,43 @@ class FlutterListViewRender extends RenderSliver
           return;
         }
       } else {
-        if (_handleKeepPositionInLayout(viewportHeight, childConstraints)) {
+        if (_handleKeepPositionInLayout(
+            viewportHeight, childConstraints, childCountShrunk)) {
           return;
         }
       }
     }
 
+    // Fresh samples can move the height estimate while the row total still
+    // reflects the old one. Refresh the extent without disturbing any
+    // laid-out rows. When the offset was parked at the old end (or the snap
+    // above already targeted it), track the refreshed end so pixels never
+    // rest past the true content.
+    if (childManager.totalEstimateStale) {
+      final oldMax =
+          math.max(0.0, childManager.totalItemHeight - viewportHeight);
+      final wasAtEnd = (constraints.scrollOffset - oldMax).abs() < 1.0;
+      childManager.calcTotalItemHeight();
+      final newMax =
+          math.max(0.0, childManager.totalItemHeight - viewportHeight);
+      if (_snapTracksEnd || wasAtEnd) {
+        _snapTarget = newMax;
+      } else if ((_snapTarget ?? constraints.scrollOffset) > newMax + 0.01) {
+        _snapTarget = newMax;
+        _snapTracksEnd = newMax > 0;
+      }
+    }
+
+    // Build the window around the snap destination when one is pending.
+    if (_snapTarget != null) {
+      targetStartScrollOffset = _snapTarget! + constraints.cacheOrigin;
+      targetEndScrollOffset =
+          targetStartScrollOffset + constraints.remainingCacheExtent;
+    }
+
     if (_isAdjustOperation == false) {
-      childManager.removeOutOfScopeElements(scrollOffset, viewportHeight);
+      childManager.removeOutOfScopeElements(
+          _snapTarget ?? scrollOffset, viewportHeight);
     }
 
     /// It the prev element's height not same with prefer's
@@ -335,6 +387,13 @@ class FlutterListViewRender extends RenderSliver
     final double targetEndScrollOffsetForPaint =
         constraints.scrollOffset + constraints.remainingPaintExtent;
 
+    // A pending snap rides along with full geometry: the window above was
+    // already built around its destination, so this frame paints true rows
+    // at the landing offset instead of flashing a blank correction frame.
+    if (_snapTarget != null) {
+      compensationScroll += _snapTarget! - constraints.scrollOffset;
+    }
+
     geometry = SliverGeometry(
         scrollExtent: _getScrollExtent(),
         paintExtent: _getPaintExtent(paintExtent),
@@ -348,7 +407,7 @@ class FlutterListViewRender extends RenderSliver
         scrollOffsetCorrection:
             (compensationScroll < 0.01 && compensationScroll >= -0.01)
                 ? null
-                : compensationScroll);
+                : _clampCorrection(compensationScroll, viewportHeight));
 
     if (_isAdjustOperation) {
       childManager.notifyPositionChanged();
@@ -451,7 +510,8 @@ class FlutterListViewRender extends RenderSliver
         geometry = SliverGeometry(
             scrollExtent: _getScrollExtent(),
             hasVisualOverflow: true,
-            scrollOffsetCorrection: scrollDy - constraints.scrollOffset);
+            scrollOffsetCorrection: _clampCorrection(
+                scrollDy - constraints.scrollOffset, viewportHeight));
         return true;
       }
     }
@@ -459,8 +519,21 @@ class FlutterListViewRender extends RenderSliver
     return false;
   }
 
-  bool _handleKeepPositionInLayout(
-      double viewportHeight, Constraints childConstraints) {
+  /// Clamp a scroll offset correction so the resulting offset stays inside
+  /// the valid range. Estimated heights make the raw correction overshoot
+  /// past either end, which reads as a bounce past the bottom or a list
+  /// dangling past the top. Clamping never hides a real move: any in-range
+  /// target passes through unchanged.
+  double _clampCorrection(double correction, double viewportHeight) {
+    final maxOffset =
+        math.max(0.0, childManager.totalItemHeight - viewportHeight);
+    final target =
+        (constraints.scrollOffset + correction).clamp(0.0, maxOffset);
+    return target - constraints.scrollOffset;
+  }
+
+  bool _handleKeepPositionInLayout(double viewportHeight,
+      Constraints childConstraints, bool childCountShrunk) {
     if (childManager.keepPosition &&
         childManager.keepPositionOffset <= constraints.scrollOffset &&
         firstPainItemInViewport != null &&
@@ -510,10 +583,28 @@ class FlutterListViewRender extends RenderSliver
                 cacheExtent: _getCacheExtent(cacheExtent),
                 maxPaintExtent: _getPaintExtent(paintExtent),
                 hasVisualOverflow: false,
-                scrollOffsetCorrection:
-                    correctOffsetDy - constraints.scrollOffset);
+                scrollOffsetCorrection: _clampCorrection(
+                    correctOffsetDy - constraints.scrollOffset,
+                    viewportHeight));
             return true;
           }
+        }
+      } else {
+        // Anchor row is gone. When rows were just removed, the eviction
+        // reached the viewport, so the offset now points at stale middle
+        // rows: snap to the far end (the new oldest) instead of dangling
+        // until some later update moves the list. Otherwise just clamp a
+        // dangling offset back into range. The window below builds around
+        // the target, so no blank correction-only frame is needed.
+        final maxOffset =
+            math.max(0.0, childManager.totalItemHeight - viewportHeight);
+        final target = childCountShrunk
+            ? maxOffset
+            : constraints.scrollOffset.clamp(0.0, maxOffset);
+        if ((target - constraints.scrollOffset).abs() > 0.01) {
+          _snapTarget = target;
+          _snapTracksEnd = target == maxOffset && maxOffset > 0;
+          _isAdjustOperation = false;
         }
       }
     }
