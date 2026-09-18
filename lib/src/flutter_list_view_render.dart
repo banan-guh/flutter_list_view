@@ -404,10 +404,8 @@ class FlutterListViewRender extends RenderSliver
             endRenderChildOffset > targetEndScrollOffsetForPaint ||
                 constraints.scrollOffset > 0.0,
         // hasVisualOverflow: true,
-        scrollOffsetCorrection:
-            (compensationScroll < 0.01 && compensationScroll >= -0.01)
-                ? null
-                : _clampCorrection(compensationScroll, viewportHeight));
+        scrollOffsetCorrection: _correctionOrNull(
+            _clampCorrection(compensationScroll, viewportHeight)));
 
     if (_isAdjustOperation) {
       childManager.notifyPositionChanged();
@@ -510,8 +508,8 @@ class FlutterListViewRender extends RenderSliver
         geometry = SliverGeometry(
             scrollExtent: _getScrollExtent(),
             hasVisualOverflow: true,
-            scrollOffsetCorrection: _clampCorrection(
-                scrollDy - constraints.scrollOffset, viewportHeight));
+            scrollOffsetCorrection: _correctionOrNull(_clampCorrection(
+                scrollDy - constraints.scrollOffset, viewportHeight)));
         return true;
       }
     }
@@ -531,6 +529,11 @@ class FlutterListViewRender extends RenderSliver
         (constraints.scrollOffset + correction).clamp(0.0, maxOffset);
     return target - constraints.scrollOffset;
   }
+
+  /// SliverGeometry rejects an explicit zero correction, so a clamp that
+  /// pulls a correction back to the resting offset reports no correction.
+  double? _correctionOrNull(double correction) =>
+      correction.abs() < 0.01 ? null : correction;
 
   bool _handleKeepPositionInLayout(double viewportHeight,
       Constraints childConstraints, bool childCountShrunk) {
@@ -583,9 +586,9 @@ class FlutterListViewRender extends RenderSliver
                 cacheExtent: _getCacheExtent(cacheExtent),
                 maxPaintExtent: _getPaintExtent(paintExtent),
                 hasVisualOverflow: false,
-                scrollOffsetCorrection: _clampCorrection(
+                scrollOffsetCorrection: _correctionOrNull(_clampCorrection(
                     correctOffsetDy - constraints.scrollOffset,
-                    viewportHeight));
+                    viewportHeight)));
             return true;
           }
         }
