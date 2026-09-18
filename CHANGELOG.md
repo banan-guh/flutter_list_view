@@ -106,7 +106,8 @@
   of dangling on stale rows; the window builds around the destination so no
   blank correction frame flashes
 * Clamp every scroll offset correction to the valid range so estimates can
-  no longer overshoot past either end
+  no longer overshoot past either end; a clamp that lands on the resting
+  offset reports no correction instead of an illegal zero
 * Bound the height map to keys the buffer still holds, so truncated rows stop
   accumulating forever; live rows keep exact heights, no scroll math changes
 * Cap the reuse cache at 64 entries, oldest disposed first, so jump dumps
