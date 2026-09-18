@@ -167,6 +167,21 @@ class FlutterListViewElement extends RenderObjectElement {
   final List<FlutterListViewRenderData> _cachedElements = [];
   List<FlutterListViewRenderData> get cachedElements => _cachedElements;
 
+  /// Bounds reuse memory: every scroll-out parks one subtree here, so an
+  /// uncapped list pins evicted rows forever. The oldest entries go first.
+  static const _maxCachedElements = 64;
+
+  /// Slack before a height prune runs. Chat inserts one row per message while
+  /// the count stays flat, so the map is only scanned once it outgrows the
+  /// live buffer by this margin.
+  static const _heightPruneSlack = 128;
+
+  @visibleForTesting
+  int get debugItemHeightCount => _itemHeights.length;
+
+  @visibleForTesting
+  int get debugCachedElementCount => _cachedElements.length;
+
   /// 总的item的高度
   double _totalItemHeight = 0;
 
@@ -523,11 +538,17 @@ class FlutterListViewElement extends RenderObjectElement {
     if (hasCalced == false) {
       double height = 0;
       int calcItemCount = 0;
+      final stale = <String>[];
       for (var index in _itemHeights.keys) {
         if (int.parse(index) < childCount) {
           height += _itemHeights[index]!;
           calcItemCount++;
+        } else {
+          stale.add(index);
         }
+      }
+      for (final key in stale) {
+        _itemHeights.remove(key);
       }
       var itemHeight = _fallbackItemHeight();
 
@@ -535,6 +556,19 @@ class FlutterListViewElement extends RenderObjectElement {
       _totalItemHeight = height;
     }
     _lastCalcEstimate = _fallbackItemHeight();
+    if (_itemHeights.length > childCount + _heightPruneSlack) {
+      _pruneDeadHeights();
+    }
+  }
+
+  /// Drops heights for keys the buffer no longer holds. Evicted rows never
+  /// lay out again, so forgetting them only bounds memory.
+  void _pruneDeadHeights() {
+    final live = <String>{};
+    for (var i = 0; i < childCount; i++) {
+      live.add(getKeyByItemIndex(i));
+    }
+    _itemHeights.removeWhere((key, _) => !live.contains(key));
   }
 
   double getScrollOffsetByIndex(int index) {
@@ -961,7 +995,25 @@ class FlutterListViewElement extends RenderObjectElement {
       permanentElements[key] = item;
     } else {
       cachedElements.add(item);
+      _trimCachedElements();
     }
+  }
+
+  /// Drops the oldest reuse entries past the cap. Deactivation runs inside a
+  /// layout callback: this path executes mid-layout, where dropping a child
+  /// directly would re-dirty the sliver under its own layout.
+  void _trimCachedElements() {
+    if (cachedElements.length <= _maxCachedElements) return;
+    final victims =
+        cachedElements
+            .sublist(0, cachedElements.length - _maxCachedElements)
+            .toList();
+    cachedElements.removeRange(0, victims.length);
+    renderObject.invokeLayoutCallback((_) {
+      for (final victim in victims) {
+        removeChildElement(victim.element);
+      }
+    });
   }
 
   Element? fetchItemFromCacheOrPermanent(int index) {
@@ -1029,5 +1081,12 @@ class FlutterListViewElement extends RenderObjectElement {
       widget.controller!.detach();
     }
     super.unmount();
+    // The framework unmounts visited children above; release the lists so a
+    // retained element cannot pin dead rows.
+    _renderedElements.clear();
+    _cachedElements.clear();
+    _permanentElements.clear();
+    _itemHeights.clear();
+    stickyElement = null;
   }
 }

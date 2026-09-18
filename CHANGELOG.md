@@ -107,6 +107,12 @@
   blank correction frame flashes
 * Clamp every scroll offset correction to the valid range so estimates can
   no longer overshoot past either end
+* Bound the height map to keys the buffer still holds, so truncated rows stop
+  accumulating forever; live rows keep exact heights, no scroll math changes
+* Cap the reuse cache at 64 entries, oldest disposed first, so jump dumps
+  cannot pin evicted subtrees; disposal runs in a layout callback
+* Release cached rows and heights on unmount so a retained element cannot
+  pin dead rows
 
 ## TODO
 * Add horizontal scroll support
