@@ -84,12 +84,24 @@ class FlutterListViewElement extends RenderObjectElement {
 
     final SliverChildDelegate newDelegate = newWidget.delegate;
     final SliverChildDelegate oldDelegate = oldWidget.delegate;
-    if (newDelegate != oldDelegate &&
+    final controllerChanged = oldWidget.controller != newWidget.controller;
+    final delegateChanged = newDelegate != oldDelegate &&
         (newDelegate.runtimeType != oldDelegate.runtimeType ||
-            newDelegate.shouldRebuild(oldDelegate))) performRebuild();
+            newDelegate.shouldRebuild(oldDelegate));
+    if (delegateChanged) performRebuild();
+    final jumpBefore = indexShoudBeJumpTo;
     _handleInitIndex(newDelegate, oldDelegate);
-    markAsInvalid = true;
-    renderObject.markNeedsLayout();
+    final jumpRequested =
+        indexShoudBeJumpTo != null && indexShoudBeJumpTo != jumpBefore;
+    // Parent rebuilds (keyboard ticks resize and replay the same delegate
+    // instance) need no window teardown: the viewport re-lays out reused
+    // rows on constraint change by itself. Invalidate only when addressing
+    // changed or a jump was requested; programmatic callers set the flag
+    // explicitly through their own paths.
+    if (controllerChanged || delegateChanged || jumpRequested) {
+      markAsInvalid = true;
+      renderObject.markNeedsLayout();
+    }
   }
 
   /// If the field is true, then next layout will remove all chilrend first
@@ -1004,10 +1016,9 @@ class FlutterListViewElement extends RenderObjectElement {
   /// directly would re-dirty the sliver under its own layout.
   void _trimCachedElements() {
     if (cachedElements.length <= _maxCachedElements) return;
-    final victims =
-        cachedElements
-            .sublist(0, cachedElements.length - _maxCachedElements)
-            .toList();
+    final victims = cachedElements
+        .sublist(0, cachedElements.length - _maxCachedElements)
+        .toList();
     cachedElements.removeRange(0, victims.length);
     renderObject.invokeLayoutCallback((_) {
       for (final victim in victims) {
