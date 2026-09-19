@@ -1,7 +1,6 @@
 import 'dart:math' as math;
 
 import 'flutter_list_view_delegate.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/rendering.dart';
 import 'flutter_list_view_element.dart';
 import 'flutter_list_view_model.dart';
@@ -131,37 +130,11 @@ class FlutterListViewRender extends RenderSliver
   /// clamp to zero must never chase a grown extent afterwards.
   bool _snapTracksEnd = false;
 
-  // DIAG: aggregated teardown/correction counters. Revert after diagnosis.
-  // A teardown layout rebuilds the whole window (the expensive path); a
-  // cheap tick only repositions reused rows. Prints one line per ~240
-  // sliver layouts so logging never perturbs the frame it measures.
-  static int _dbgLayouts = 0;
-  static int _dbgTeardown = 0;
-  static final Map<String, int> _dbgCorr = {};
-  static void _dbgCount({bool teardown = false, String? corr}) {
-    _dbgLayouts++;
-    if (teardown) _dbgTeardown++;
-    if (corr != null) _dbgCorr[corr] = (_dbgCorr[corr] ?? 0) + 1;
-    if (_dbgLayouts >= 240) {
-      debugPrint(
-          'DIAGFORK layouts=$_dbgLayouts teardown=$_dbgTeardown corr=$_dbgCorr');
-      _dbgLayouts = 0;
-      _dbgTeardown = 0;
-      _dbgCorr.clear();
-    }
-  }
-
-  static double? _dbgCorrWrap(double? corr, String name) {
-    if (corr != null) _dbgCount(corr: name);
-    return corr;
-  }
-
   @override
   void performLayout() {
     if (childManager.supressElementGenerate) {
       return;
     }
-    _dbgCount();
 
     final childCountShrunk =
         _lastChildCount != null && childManager.childCount < _lastChildCount!;
@@ -195,7 +168,6 @@ class FlutterListViewRender extends RenderSliver
     final BoxConstraints childConstraints = constraints.asBoxConstraints();
 
     if (childManager.markAsInvalid) {
-      _dbgCount(teardown: true);
       childManager.markAsInvalid = false;
       childManager.calcTotalItemHeight();
 
@@ -320,7 +292,6 @@ class FlutterListViewRender extends RenderSliver
             scrollExtent: _getScrollExtent(),
             hasVisualOverflow: true,
             scrollOffsetCorrection: -constraints.scrollOffset);
-        _dbgCount(corr: 'adjust-zero');
         return;
       } else if (maxRemainArea > 0 &&
           maxRemainArea < (constraints.scrollOffset + compensationScroll)) {
@@ -328,7 +299,6 @@ class FlutterListViewRender extends RenderSliver
             scrollExtent: _getScrollExtent(),
             hasVisualOverflow: true,
             scrollOffsetCorrection: maxRemainArea - constraints.scrollOffset);
-        _dbgCount(corr: 'adjust-clamp');
         return;
       }
     }
@@ -380,7 +350,6 @@ class FlutterListViewRender extends RenderSliver
           scrollExtent: _getScrollExtent(),
           hasVisualOverflow: false,
           scrollOffsetCorrection: differIncreaseHeight);
-      _dbgCount(corr: 'size');
       return;
     }
 
@@ -435,10 +404,8 @@ class FlutterListViewRender extends RenderSliver
             endRenderChildOffset > targetEndScrollOffsetForPaint ||
                 constraints.scrollOffset > 0.0,
         // hasVisualOverflow: true,
-        scrollOffsetCorrection: _dbgCorrWrap(
-            _correctionOrNull(
-                _clampCorrection(compensationScroll, viewportHeight)),
-            'final'));
+        scrollOffsetCorrection: _correctionOrNull(
+            _clampCorrection(compensationScroll, viewportHeight)));
 
     if (_isAdjustOperation) {
       childManager.notifyPositionChanged();
@@ -541,10 +508,8 @@ class FlutterListViewRender extends RenderSliver
         geometry = SliverGeometry(
             scrollExtent: _getScrollExtent(),
             hasVisualOverflow: true,
-            scrollOffsetCorrection: _dbgCorrWrap(
-                _correctionOrNull(_clampCorrection(
-                    scrollDy - constraints.scrollOffset, viewportHeight)),
-                'jump'));
+            scrollOffsetCorrection: _correctionOrNull(_clampCorrection(
+                scrollDy - constraints.scrollOffset, viewportHeight)));
         return true;
       }
     }
@@ -621,11 +586,9 @@ class FlutterListViewRender extends RenderSliver
                 cacheExtent: _getCacheExtent(cacheExtent),
                 maxPaintExtent: _getPaintExtent(paintExtent),
                 hasVisualOverflow: false,
-                scrollOffsetCorrection: _dbgCorrWrap(
-                    _correctionOrNull(_clampCorrection(
-                        correctOffsetDy - constraints.scrollOffset,
-                        viewportHeight)),
-                    'keep'));
+                scrollOffsetCorrection: _correctionOrNull(_clampCorrection(
+                    correctOffsetDy - constraints.scrollOffset,
+                    viewportHeight)));
             return true;
           }
         }
